@@ -1,0 +1,1 @@
+PYTHONPATH=src src/debcopy.py examples/copyright && diff examples/copyright{,.re}
