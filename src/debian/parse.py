@@ -1,7 +1,7 @@
 """
 module debian.parse
 
-@author: Ximin Luo <infinity0@gmx.com> 
+@author: Ximin Luo <infinity0@gmx.com>
 """
 
 from code import interact
@@ -9,9 +9,17 @@ from collections import namedtuple
 from debian.util import Any, dict_append, roundrobin, uninvert_idx
 
 
-TopLevelParser = Any()
-TopLevelParser.keyX = lambda block: (None, [], block)
-TopLevelParser.keyU = lambda s, pri, aux: aux
+class PresetRootParser(namedtuple(
+	"PresetRootParser", "primary")):
+
+	def keyX(self, block):
+		return (None, self.primary, block)
+
+	def keyU(self, s, pri, aux):
+		return aux
+
+
+RootParser = PresetRootParser([])
 
 
 class MKVCParser(namedtuple(
@@ -25,7 +33,7 @@ class MKVCParser(namedtuple(
 	auxillary ::
 		auxillary data of a block (e.g. comments), represented as [chunk]
 
-	@param omaker: primary -> application-level object 
+	@param omaker: primary -> application-level object
 	@param pselect: key -> MKVCParser
 	@param extraP: chunk, was_block -> bool
 	@param blockP: chunk, was_block -> bool
@@ -49,7 +57,7 @@ class MKVCParser(namedtuple(
 		s, pri, aux = parts
 		return self.pselect(self.keyC(s)).parse_parts(s, pri, aux, self)
 
-	def parse(self, block, parent=TopLevelParser):
+	def parse(self, block, parent=RootParser):
 		s, pri, aux = parent.keyX(block)
 		return self.parse_parts(s, pri, aux, parent)
 
@@ -101,16 +109,16 @@ class MKVCParser(namedtuple(
 
 		return result
 
-	def load(self, fn):
+	def load(self, fn, parent=RootParser):
 		with open(fn) as fp:
-			return self.parse(fp)
+			return self.parse(fp, parent)
 
 
 class MKVCState(namedtuple("MKVCState",
 	"omaker keystr primary childs keyidx extras keyU")):
 	"""Multi-key-value chunk parser result state.
 
-	@param omaker: primary -> application-level object 
+	@param omaker: primary -> application-level object
 	@param keystr: main key-string for this state
 	@param primary: [chunk] main data for this block
 	@param childs: [MKVCState]

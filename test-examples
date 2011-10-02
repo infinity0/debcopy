@@ -1,1 +1,3 @@
-PYTHONPATH=src src/debcopy.py examples/copyright && diff examples/copyright{,.re}
+CR="$1"
+shift
+PYTHONPATH=src src/debcopy.py "$CR" "$@" && diff "$CR"{,.re}

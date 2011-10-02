@@ -8,7 +8,16 @@ from debian.debutil import (v_single, v_list, v_text, v_text_synop, v_words)
 from debian.debcontrol import SimpleControlBlock, ControlParser, \
 	ItemCstr
 from debian.license import LicenseSpec
+from debian.parse import PresetRootParser
+from debian.changelog import Changelog
 from itertools import chain
+import sys
+
+
+def warn(fmtstr, args=(), desc=None):
+	print >>sys.stderr, "W:", fmtstr % args
+	if desc:
+		print >>sys.stderr, " :", desc
 
 
 def lcspec_text_synop(lines):
@@ -69,43 +78,100 @@ def globDEP5(pattern, path):
 	raise AssertionError
 
 def copyright_check_post(state):
-	simple = []
-	compound = []
-	# TODO(infinity0): redo this section
-	# - error when a {multi-license without full text} does not
-	#   have license blocks for any of its components
-	# - warn against multiple full texts for same license
-	# - warn against {multi-license with full text}, instead
-	#   recommend full texts be split
-	# - warn non-native package, but no separate debian/* clause
+	licenses = {}  # { License : [ ( LicenseSpec, has_full_text, standalone ) ] }
 
 	for li_block in [state.get("format")] + state.getall("files"):
 		lcinfo = li_block.get("license")
 		if not lcinfo: continue
 		spec, text = lcinfo.model()
-		if spec.is_leaf():
-			simple.append(spec.base())
-		else:
-			compound.append(spec)
+		has_text = not not "".join(text).strip()
+		leaves = [spec.base()] if spec.is_leaf() else spec.leaves()
+		for leaf in leaves:
+			refs = licenses.setdefault(leaf, [])
+			refs.append((spec, has_text, False))
 
 	for lc_block in state.getall("license"):
 		spec, text = lc_block.model()
+		has_text = not not "".join(text).strip()
 		if spec.is_leaf():
-			simple.append(spec.base())
+			refs = licenses.setdefault(spec.base(), [])
+			refs.append((spec, has_text, True))
 		else:
 			raise SyntaxError("Can only specify non-compound License blocks: %s" % spec)
 
-	referred = set(chain(*(spec.leaves() for spec in compound)))
-	simple = set(simple)
-	dangling = referred - simple
-	if dangling:
-		raise SyntaxError("Licenses without stand-alone full text: %s" % dangling)
+	def _no_standalone_no_text(ref):
+		spec, has_text, standalone = ref
+		return not standalone and not has_text
+
+	def _standalone_with_text(ref):
+		spec, has_text, standalone = ref
+		return standalone and has_text
+
+	def _compound_no_standalone_with_text(ref):
+		spec, has_text, standalone = ref
+		return not spec.is_leaf() and not standalone and has_text
+
+	def _has_text(ref):
+		spec, has_text, standalone = ref
+		return has_text
+
+	# - error when a {file/format license without full text} does not
+	#   have license blocks for any of its components
+	# - specified by DEP-5
+	error_lc_block = filter(
+		lambda lc: filter(_no_standalone_no_text, licenses[lc])
+			and not filter(_standalone_with_text, licenses[lc]),
+		licenses)
+	if error_lc_block:
+		raise SyntaxError("License in File/Format block with neither full text nor License block: %s" % error_lc_block)
+
+	# - warn on {compound file/format license with full text}, instead
+	#   recommend full texts be split
+	no_standalone_with_text = filter(
+		lambda lc: not not filter(_compound_no_standalone_with_text, licenses[lc]),
+		licenses)
+	if no_standalone_with_text:
+		warn("Full text for compound License in File/Format block: %s", no_standalone_with_text,
+			("This is permitted by DEP-5, but we believe it is clearer to split the full text of "
+			 "each license into separate License blocks. If you need to clarify exactly how these "
+			 "licenses are combined, please use the Comment field for that purpose. "))
+
+	# - warn on multiple full texts for same license
+	multi_text = filter(
+		lambda lc: len(filter(_has_text, licenses[lc])) > 1,
+		licenses)
+	if multi_text:
+		warn("Licenses with multiple full texts: %s", multi_text,
+			("This is permitted by DEP-5, but we believe it is clearer to refactor these into a "
+			 "single License block. If the usage of each License differs for each occurence, "
+			 "please use the Comment field for that purpose. "))
+
+	# - warn when non-native package, but no separate debian/* clause
+	meta = state.model()
+	globs = [glob
+		for fi_block in state.getall("files")
+		for glob in fi_block.model()]
+	if "changelog" in meta and \
+	  meta["changelog"].get_version().debian_revision is not None and \
+	  all(not glob.startswith("debian/") for glob in globs):
+		warn("Non-native package without debian/[etc] glob: %s", globs,
+			("Non-native packages usually have different upstream author and debian maintainer. "
+			 "In such cases the copyrights will be different for each set of files. "
+			 "If they are the case, you may ignore this warning, but it may be clearer to "
+			 "split the glob patterns even so, in case this arrangement ceases in the future. "))
+
+	#for k, vv in licenses.iteritems():
+	#	print k
+	#	for v in vv:
+	#		print "\t", v
 
 
 DebianCopyright = ControlParser.cstrKeys(
   ItemCstr.SimpleWithHead("format", [], ["files", "license"])
 ).add_check_post(
 	copyright_check_post
+).use(omaker=lambda chunks:
+	{"changelog": Changelog(chunks)} if chunks else {}
 ).use(pselect={
 	"format" : SimpleControlBlock(v_single, {}, {
 		"upstream-name": v_single,
@@ -125,3 +191,24 @@ DebianCopyright = ControlParser.cstrKeys(
 		"location": v_single,
 	}),
 }.get)
+
+
+def DebianCopyrightMeta(fn):
+	with open(fn) as fp:
+		return PresetRootParser(fp.readlines())
+
+
+def get_license_for_file(state, fn):
+	for fi_block in state.getall("files").__reversed__():
+		for glob in fi_block.model().__reversed__():
+			if globDEP5(glob, fn):
+				return fi_block
+
+def get_full_text_for_license(state, lc):
+	for fi_block in state.getall("files"):
+		lcinfo = fi_block.get("license")
+		spec, text = lcinfo.model()
+		# TODO(infinity0): rethink, either return one or all?
+		# and what about where full text belongs to a compound license?
+
+

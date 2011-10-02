@@ -1,0 +1,6 @@
+# Running
+
+After clone, check src/debian/*.py. If there are dangling symlinks, they can
+be filled by installing the python-debian package. This is just a temporary
+solution. TODO(infinity0): fix this
+
